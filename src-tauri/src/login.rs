@@ -110,9 +110,6 @@ async fn open_login(
             return json!({ "ok": false, "canceled": true });
         };
         let map = collect_cookies(&w, cfg.cookie_urls);
-        // 诊断日志：看每轮读到哪些 cookie 名
-        tracing::warn!("[LOGIN {} #{i}] cookies: {:?}", cfg.label, map.keys().collect::<Vec<_>>());
-
         if ready(&map) {
             let cookie = render_cookie(&map);
             let _ = w.close();

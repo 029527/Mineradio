@@ -50,6 +50,11 @@ fn build_router() -> Router {
     let state = AppState {
         client: reqwest::Client::builder()
             .gzip(true)
+            // 关键：禁用系统代理。reqwest 默认读取 HTTP(S)_PROXY/ALL_PROXY 环境变量，
+            // 会把网易云/QQ 请求经 Clash/Surge 等代理路由到境外被拒(error sending request)。
+            // 原版 Node http/https 默认直连，这里对齐为直连。
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .expect("构建 reqwest client 失败"),
     };
