@@ -4,7 +4,8 @@
 //! 连字符字符串。窗口控制 / 桌面歌词 / 壁纸为真实实现；热键 / 对话框 / 登录 /
 //! 更新先返回优雅占位（后续阶段接入对应插件）。
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use serde_json::{json, Value};
 use tauri::{
@@ -13,6 +14,15 @@ use tauri::{
 
 // 前端基址：开发期 rsbuild(1420)，生产期 axum 端口。覆盖层窗口据此加载页面。
 static FRONTEND_BASE: OnceLock<String> = OnceLock::new();
+
+// 全局热键 快捷键字符串 → 动作名 映射（global-shortcut handler 据此回查并广播事件）。
+static HOTKEY_MAP: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 供 global-shortcut handler 回查动作名。
+pub fn hotkey_action(shortcut: &str) -> Option<String> {
+    HOTKEY_MAP.lock().unwrap().get(shortcut).cloned()
+}
 
 pub fn set_frontend_base(url: String) {
     let _ = FRONTEND_BASE.set(url);
@@ -230,21 +240,74 @@ pub fn wallpaper_update(app: AppHandle, payload: Value) -> Value {
 // ---------------- 占位命令（后续阶段接入插件 / 登录）----------------
 
 #[tauri::command]
-pub fn hotkeys_configure_global(_bindings: Value) -> Value {
-    // TODO(阶段#6): tauri-plugin-global-shortcut 注册
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+pub fn hotkeys_configure_global(app: AppHandle, bindings: Value) -> Value {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+    let mut map = HOTKEY_MAP.lock().unwrap();
+    map.clear();
+    let mut registered = 0;
+    if let Some(arr) = bindings.as_array() {
+        for b in arr {
+            let global = b.get("global").and_then(|x| x.as_str()).unwrap_or("");
+            let action = b.get("action").and_then(|x| x.as_str()).unwrap_or("");
+            if global.is_empty() || action.is_empty() {
+                continue;
+            }
+            if let Ok(sc) = global.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                if gs.register(sc).is_ok() {
+                    map.insert(sc.to_string(), action.to_string());
+                    registered += 1;
+                }
+            }
+        }
+    }
+    json!({ "ok": true, "registered": registered })
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| if "\\/:*?\"<>|".contains(c) { '-' } else { c })
+        .collect()
 }
 
 #[tauri::command]
-pub fn export_json_file(_payload: Value) -> Value {
-    // TODO(阶段#6): tauri-plugin-dialog + fs 写出
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+pub fn export_json_file(app: AppHandle, payload: Value) -> Value {
+    use tauri_plugin_dialog::DialogExt;
+    let default_name = payload.get("defaultName").and_then(|x| x.as_str()).unwrap_or("mineradio-export.json");
+    let name = sanitize_filename(default_name);
+    let name = if name.to_lowercase().ends_with(".json") { name } else { format!("{name}.json") };
+    let text = payload
+        .get("text")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| serde_json::to_string_pretty(payload.get("data").unwrap_or(&Value::Null)).unwrap_or_default());
+
+    match app.dialog().file().add_filter("JSON", &["json"]).set_file_name(name).blocking_save_file() {
+        Some(fp) => match fp.into_path() {
+            Ok(p) => match std::fs::write(&p, text) {
+                Ok(_) => json!({ "ok": true, "filePath": p.to_string_lossy() }),
+                Err(e) => json!({ "ok": false, "error": e.to_string() }),
+            },
+            Err(e) => json!({ "ok": false, "error": e.to_string() }),
+        },
+        None => json!({ "ok": false, "canceled": true }),
+    }
 }
 
 #[tauri::command]
-pub fn import_json_file() -> Value {
-    // TODO(阶段#6): tauri-plugin-dialog + fs 读入
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+pub fn import_json_file(app: AppHandle) -> Value {
+    use tauri_plugin_dialog::DialogExt;
+    match app.dialog().file().add_filter("JSON", &["json"]).blocking_pick_file() {
+        Some(fp) => match fp.into_path() {
+            Ok(p) => match std::fs::read_to_string(&p) {
+                Ok(text) => json!({ "ok": true, "filePath": p.to_string_lossy(), "text": text }),
+                Err(e) => json!({ "ok": false, "error": e.to_string() }),
+            },
+            Err(e) => json!({ "ok": false, "error": e.to_string() }),
+        },
+        None => json!({ "ok": false, "canceled": true }),
+    }
 }
 
 #[tauri::command]
@@ -268,6 +331,13 @@ pub fn qq_music_clear_login() -> Value {
 }
 
 #[tauri::command]
-pub fn open_update_installer(_file_path: String) -> Value {
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+pub fn open_update_installer(app: AppHandle, file_path: String) -> Value {
+    use tauri_plugin_opener::OpenerExt;
+    if file_path.is_empty() || !std::path::Path::new(&file_path).exists() {
+        return json!({ "ok": false, "error": "UPDATE_FILE_MISSING" });
+    }
+    match app.opener().open_path(file_path, None::<&str>) {
+        Ok(_) => json!({ "ok": true }),
+        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+    }
 }
