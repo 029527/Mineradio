@@ -112,23 +112,29 @@ if (tauri) {
       (document.head || document.documentElement).appendChild(style);
     }
 
-    const inDragRegion = (target: EventTarget | null): boolean => {
-      const el = target as HTMLElement | null;
-      if (!el || !el.closest) return false;
-      // 控件/按钮/输入不触发拖动
-      if (el.closest('.desktop-window-controls, button, input, a, select, textarea, [data-window-action], .desktop-mode-btn')) {
-        return false;
-      }
-      return !!el.closest('#desktop-titlebar, .desktop-drag-region');
+    const NO_DRAG = '.desktop-window-controls, button, input, a, select, textarea, [data-window-action], .desktop-mode-btn, #update-entry, #visual-guide-btn';
+    // 基于「可见顶栏的矩形范围」判断拖拽区：整条顶栏(含红绿灯那一排，红绿灯本身由系统处理)
+    // 只要不是交互控件都可拖动。避免 pointer-events:none 容器 / 左侧留白导致命中失败。
+    const inDragRegion = (e: PointerEvent | MouseEvent): boolean => {
+      const tb = document.getElementById('desktop-titlebar');
+      if (!tb) return false;
+      const cs = getComputedStyle(tb);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      const r = tb.getBoundingClientRect();
+      if (r.height === 0) return false;
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return false;
+      const el = e.target as HTMLElement | null;
+      if (el && el.closest && el.closest(NO_DRAG)) return false;
+      return true;
     };
     window.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
-      if (inDragRegion(e.target)) {
+      if (inDragRegion(e)) {
         appWindow.startDragging?.().catch(() => {});
       }
     });
     window.addEventListener('dblclick', (e) => {
-      if (inDragRegion(e.target)) {
+      if (inDragRegion(e)) {
         invoke('desktop_window_toggle_maximize').catch(() => {});
       }
     });
