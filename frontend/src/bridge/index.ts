@@ -105,11 +105,15 @@ if (tauri) {
   if (tauriWindow?.getCurrentWindow) {
     const appWindow = tauriWindow.getCurrentWindow();
 
-    // macOS Overlay 标题栏：左上角有原生红绿灯，给应用顶栏留出左侧空间避免遮挡。
+    // macOS Overlay 标题栏：左上角有原生红绿灯。
+    // 1) 给应用顶栏留出左侧空间避免遮挡；2) 隐藏应用自绘的 min/max/close(与红绿灯重复)，
+    //    保留 DIY/更新/引导按钮。(Windows 无边框、无红绿灯，仍用应用自绘控件)
     const isMac = /Mac/i.test(navigator.platform) || /Macintosh/i.test(navigator.userAgent);
     if (isMac) {
       const style = document.createElement('style');
-      style.textContent = 'body.desktop-shell #desktop-titlebar{padding-left:84px}';
+      style.textContent =
+        'body.desktop-shell #desktop-titlebar{padding-left:84px}' +
+        'body.desktop-shell .desktop-window-btn{display:none!important}';
       (document.head || document.documentElement).appendChild(style);
     }
 

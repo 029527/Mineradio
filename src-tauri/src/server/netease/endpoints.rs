@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 
 use super::{
-    client::{eapi_request, request_eapi, weapi_request},
+    client::{eapi_request, eapi_request_anon, request_eapi_anon, weapi_request},
     cookie_store, qr,
 };
 
@@ -180,7 +180,7 @@ fn normalize_quality(value: &str) -> String {
 
 /// /api/login/qr/key → { key }
 pub async fn login_qr_key(client: &reqwest::Client) -> Result<Value, String> {
-    let body = eapi_request(client, "/api/login/qrcode/unikey", json!({ "type": 3 })).await?;
+    let body = eapi_request_anon(client, "/api/login/qrcode/unikey", json!({ "type": 3 })).await?;
     Ok(json!({ "key": body.get("unikey").cloned().unwrap_or(Value::Null) }))
 }
 
@@ -192,7 +192,7 @@ pub fn login_qr_create(key: &str) -> Value {
 
 /// /api/login/qr/check?key= → { code, message, ...info }
 pub async fn login_qr_check(client: &reqwest::Client, key: &str) -> Result<Value, String> {
-    let resp = request_eapi(client, "/api/login/qrcode/client/login", json!({ "key": key, "type": 3 })).await?;
+    let resp = request_eapi_anon(client, "/api/login/qrcode/client/login", json!({ "key": key, "type": 3 })).await?;
     let code = resp.body.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
     let message = s(&resp.body, "message").to_string();
     // 803 = 授权成功

@@ -55,11 +55,21 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-/// eapi 请求。`uri` 为原始 `/api/...`，`data` 为业务参数对象。
-pub async fn request_eapi(
+/// eapi 请求（带登录态）。`uri` 为原始 `/api/...`，`data` 为业务参数对象。
+pub async fn request_eapi(client: &reqwest::Client, uri: &str, data: Value) -> Result<ApiResponse, String> {
+    request_eapi_inner(client, uri, data, true).await
+}
+
+/// eapi 请求（匿名，不注入登录 cookie）。扫码登录端点用此，避免旧 cookie 干扰。
+pub async fn request_eapi_anon(client: &reqwest::Client, uri: &str, data: Value) -> Result<ApiResponse, String> {
+    request_eapi_inner(client, uri, data, false).await
+}
+
+async fn request_eapi_inner(
     client: &reqwest::Client,
     uri: &str,
     mut data: Value,
+    with_auth: bool,
 ) -> Result<ApiResponse, String> {
     let buildver = (now_ms() / 1000).to_string();
     let request_id = format!("{}_{:04}", now_ms(), now_ms() % 1000);
@@ -73,12 +83,14 @@ pub async fn request_eapi(
         "mobilename": "",
         "buildver": buildver,
         "resolution": "1920x1080",
-        "__csrf": cookie_store::csrf(),
+        "__csrf": if with_auth { cookie_store::csrf() } else { String::new() },
         "channel": "netease",
         "requestId": request_id,
     });
-    if let Some(mu) = cookie_store::music_u() {
-        header["MUSIC_U"] = json!(mu);
+    if with_auth {
+        if let Some(mu) = cookie_store::music_u() {
+            header["MUSIC_U"] = json!(mu);
+        }
     }
     let cookie = header_to_cookie(&header);
 
@@ -142,6 +154,11 @@ pub async fn request_weapi(
 /// 便捷：仅取 eapi 响应 body（多数业务端点用）。
 pub async fn eapi_request(client: &reqwest::Client, uri: &str, data: Value) -> Result<Value, String> {
     request_eapi(client, uri, data).await.map(|r| r.body)
+}
+
+/// 便捷：匿名 eapi，仅取 body。
+pub async fn eapi_request_anon(client: &reqwest::Client, uri: &str, data: Value) -> Result<Value, String> {
+    request_eapi_anon(client, uri, data).await.map(|r| r.body)
 }
 
 /// 便捷：仅取 weapi 响应 body。
