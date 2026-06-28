@@ -103,6 +103,15 @@ if (tauri) {
   const tauriWindow = (window as any).__TAURI__?.window;
   if (tauriWindow?.getCurrentWindow) {
     const appWindow = tauriWindow.getCurrentWindow();
+
+    // macOS Overlay 标题栏：左上角有原生红绿灯，给应用顶栏留出左侧空间避免遮挡。
+    const isMac = /Mac/i.test(navigator.platform) || /Macintosh/i.test(navigator.userAgent);
+    if (isMac) {
+      const style = document.createElement('style');
+      style.textContent = 'body.desktop-shell #desktop-titlebar{padding-left:84px}';
+      (document.head || document.documentElement).appendChild(style);
+    }
+
     const inDragRegion = (target: EventTarget | null): boolean => {
       const el = target as HTMLElement | null;
       if (!el || !el.closest) return false;
