@@ -65,6 +65,7 @@ fn build_router() -> Router {
         .route("/api/logout", get(logout))
         .route("/api/login/cookie", axum::routing::post(login_cookie))
         .route("/api/user/playlists", get(user_playlists))
+        .route("/api/playlist/tracks", get(playlist_tracks))
         .route("/api/discover/home", get(discover_home))
         .with_state(state);
 
@@ -214,6 +215,16 @@ async fn discover_home(State(st): State<AppState>) -> Response {
     json_ok(endpoints::discover_home(&st.client).await)
 }
 
+async fn playlist_tracks(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(id) = q.get("id").filter(|s| !s.is_empty()) else {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing playlist id", "tracks": [] }));
+    };
+    match endpoints::playlist_tracks(&st.client, id).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e, "tracks": [] })),
+    }
+}
+
 #[cfg(test)]
 mod login_tests {
     use std::time::Duration;
@@ -257,5 +268,12 @@ mod login_tests {
         let home: serde_json::Value = client.get(format!("{base}/api/discover/home")).send().await.unwrap().json().await.unwrap();
         assert_eq!(home["mode"].as_str(), Some("starter"), "匿名首页应为 starter");
         println!("登录链路匿名态全部符合预期");
+
+        // 公开歌单 tracks（匿名可取）：3778678 = 云音乐热歌榜
+        let pt: serde_json::Value = client.get(format!("{base}/api/playlist/tracks")).query(&[("id", "3778678")]).send().await.unwrap().json().await.unwrap();
+        let tracks = pt["tracks"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!("歌单 '{}' 取到 {} 首", pt["playlist"]["name"].as_str().unwrap_or("?"), tracks);
+        assert!(tracks > 0, "公开歌单应有歌曲: {pt}");
+        assert!(pt["tracks"][0]["name"].as_str().is_some(), "歌曲缺 name");
     }
 }

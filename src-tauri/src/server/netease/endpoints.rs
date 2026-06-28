@@ -378,6 +378,48 @@ pub async fn discover_home(client: &reqwest::Client) -> Value {
     })
 }
 
+/// /api/playlist/tracks → { playlist: {...}, tracks: [...] }
+pub async fn playlist_tracks(client: &reqwest::Client, id: &str) -> Result<Value, String> {
+    let detail = eapi_request(client, "/api/v6/playlist/detail", json!({ "id": id, "n": 100000, "s": 8 })).await?;
+    let pl = detail.get("playlist").cloned().unwrap_or_else(|| json!({}));
+    let meta = json!({
+        "id": pl.get("id").cloned().unwrap_or_else(|| json!(id)),
+        "name": s(&pl, "name"),
+        "cover": s(&pl, "coverImgUrl"),
+        "trackCount": pl.get("trackCount").cloned().unwrap_or(json!(0)),
+    });
+
+    // 先尝试 trackIds → 批量 song/detail（拿全量、字段更全）
+    let track_ids: Vec<i64> = pl
+        .get("trackIds")
+        .and_then(|x| x.as_array())
+        .map(|arr| arr.iter().filter_map(|t| t.get("id").and_then(|i| i.as_i64())).take(500).collect())
+        .unwrap_or_default();
+
+    let tracks: Vec<Value> = if !track_ids.is_empty() {
+        let c = format!(
+            "[{}]",
+            track_ids.iter().map(|i| format!("{{\"id\":{i}}}")).collect::<Vec<_>>().join(",")
+        );
+        let sd = eapi_request(client, "/api/v3/song/detail", json!({ "c": c })).await?;
+        sd.get("songs")
+            .and_then(|x| x.as_array())
+            .map(|arr| arr.iter().map(map_song_record).filter(|t| !t.get("id").map(|i| i.is_null()).unwrap_or(true)).collect())
+            .unwrap_or_default()
+    } else {
+        pl.get("tracks")
+            .and_then(|x| x.as_array())
+            .map(|arr| arr.iter().map(map_song_record).collect())
+            .unwrap_or_default()
+    };
+
+    let mut meta = meta;
+    if meta.get("trackCount").and_then(|c| c.as_i64()).unwrap_or(0) == 0 {
+        meta["trackCount"] = json!(tracks.len());
+    }
+    Ok(json!({ "playlist": meta, "tracks": tracks }))
+}
+
 fn map_discover_playlist(pl: &Value) -> Value {
     json!({
         "provider": "netease",
