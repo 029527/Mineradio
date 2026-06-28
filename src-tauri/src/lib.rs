@@ -5,6 +5,7 @@
 // 生产期：后端监听空闲端口并把主窗口指向 http://127.0.0.1:PORT/。
 
 pub mod commands;
+pub mod login;
 pub mod server;
 
 use tauri::{Emitter, Manager};

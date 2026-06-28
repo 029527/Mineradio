@@ -311,23 +311,24 @@ pub fn import_json_file(app: AppHandle) -> Value {
 }
 
 #[tauri::command]
-pub fn netease_music_open_login() -> Value {
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+pub async fn netease_music_open_login(app: AppHandle) -> Value {
+    crate::login::open_netease(app).await
 }
 
 #[tauri::command]
 pub fn netease_music_clear_login() -> Value {
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+    crate::server::netease::cookie_store::clear();
+    json!({ "ok": true, "loggedIn": false })
 }
 
 #[tauri::command]
-pub fn qq_music_open_login() -> Value {
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+pub async fn qq_music_open_login(app: AppHandle) -> Value {
+    crate::login::open_qq(app).await
 }
 
 #[tauri::command]
 pub fn qq_music_clear_login() -> Value {
-    json!({ "ok": false, "error": "NOT_IMPLEMENTED" })
+    crate::server::qq::logout()
 }
 
 #[tauri::command]
