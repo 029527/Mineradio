@@ -6,6 +6,7 @@
 
 pub mod netease;
 pub mod proxy;
+pub mod weather;
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
@@ -73,6 +74,8 @@ fn build_router() -> Router {
         .route("/api/artist/detail", get(artist_detail))
         .route("/api/playlist/create", get(playlist_create))
         .route("/api/playlist/add-song", axum::routing::post(playlist_add_song))
+        .route("/api/weather/radio", get(weather_radio))
+        .route("/api/weather/ip-location", get(weather_ip_location))
         // 未实现的 /api/* 返回 JSON 404（避免落到静态回退被当成 HTML 解析）。
         .route("/api/*rest", get(api_not_found).post(api_not_found))
         .with_state(state);
@@ -230,6 +233,18 @@ async fn discover_home(State(st): State<AppState>) -> Response {
     json_ok(endpoints::discover_home(&st.client).await)
 }
 
+async fn weather_radio(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let city = q.get("city").or_else(|| q.get("q")).cloned().unwrap_or_default();
+    let lat = q.get("lat").and_then(|v| v.parse::<f64>().ok());
+    let lon = q.get("lon").and_then(|v| v.parse::<f64>().ok());
+    let tz = q.get("timezone").cloned().unwrap_or_default();
+    json_ok(weather::weather_radio(&st.client, &city, lat, lon, &tz).await)
+}
+
+async fn weather_ip_location(State(st): State<AppState>) -> Response {
+    json_ok(weather::ip_location(&st.client).await)
+}
+
 async fn song_like_check(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
     let ids: Vec<i64> = q
         .get("ids")
@@ -365,5 +380,14 @@ mod login_tests {
         let asongs = ar["songs"].as_array().map(|a| a.len()).unwrap_or(0);
         println!("歌手 '{}' 取到 {} 首热门歌", ar["artist"]["name"].as_str().unwrap_or("?"), asongs);
         assert!(asongs > 0, "歌手应有热门歌: {ar}");
+
+        // 天气电台（上海）
+        let wr: serde_json::Value = client.get(format!("{base}/api/weather/radio")).query(&[("city", "上海")]).send().await.unwrap().json().await.unwrap();
+        let wsongs = wr["radio"]["songs"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!("天气电台: ok={}, {}℃ {} → '{}' 组了 {} 首",
+            wr["ok"], wr["weather"]["temperature"], wr["weather"]["label"].as_str().unwrap_or("?"),
+            wr["radio"]["title"].as_str().unwrap_or("?"), wsongs);
+        assert_eq!(wr["ok"].as_bool(), Some(true), "天气电台应 ok: {wr}");
+        assert!(wsongs > 0, "天气电台应有歌曲");
     }
 }
