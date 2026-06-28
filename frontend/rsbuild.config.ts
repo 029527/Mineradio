@@ -31,4 +31,11 @@ export default defineConfig({
       '/api': `http://127.0.0.1:${DEV_API_PORT}`,
     },
   },
+  // htmlPlugin 关闭后 HMR 客户端基建不会注入，bundle 内残留的 HMR 运行时会在
+  // webview 里报错中断、导致 bridge 入口不执行。前端是静态 HTML，无需热更新，
+  // 直接关掉 HMR/liveReload，让 dev 也产出干净自执行的 bridge。
+  dev: {
+    hmr: false,
+    liveReload: false,
+  },
 });
