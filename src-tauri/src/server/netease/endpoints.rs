@@ -368,12 +368,18 @@ pub async fn discover_home(client: &reqwest::Client) -> Value {
         .map(|arr| arr.iter().map(map_song_record).collect::<Vec<_>>())
         .unwrap_or_default();
 
+    let podcasts = podcast_hot(client, 6, 0)
+        .await
+        .ok()
+        .and_then(|b| b.get("podcasts").cloned())
+        .unwrap_or_else(|| json!([]));
+
     json!({
         "loggedIn": true,
         "user": info,
         "dailySongs": daily_songs,
         "playlists": playlists,
-        "podcasts": [],
+        "podcasts": podcasts,
         "mode": "home"
     })
 }
@@ -584,6 +590,136 @@ pub async fn playlist_add_song(client: &reqwest::Client, pid: &str, id: &str) ->
         "success": code == 200, "code": code,
         "body": fallback.unwrap_or(Value::Null),
     })
+}
+
+// ---------------- 播客 DJ ----------------
+
+fn first_str<'a>(v: &'a Value, keys: &[&str]) -> &'a str {
+    for k in keys {
+        if let Some(s) = v.get(*k).and_then(|x| x.as_str()) {
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    ""
+}
+
+fn first_num(v: &Value, keys: &[&str]) -> Value {
+    for k in keys {
+        if let Some(n) = v.get(*k) {
+            if n.is_number() {
+                return n.clone();
+            }
+        }
+    }
+    json!(0)
+}
+
+fn map_podcast_radio(r: &Value) -> Value {
+    let empty = json!({});
+    let dj = r.get("dj").or_else(|| r.get("djSimple")).or_else(|| r.get("djUser")).or_else(|| r.get("creator")).unwrap_or(&empty);
+    let id = r.get("id").or_else(|| r.get("rid")).or_else(|| r.get("radioId")).cloned().unwrap_or(Value::Null);
+    json!({
+        "id": id, "rid": id,
+        "name": first_str(r, &["name", "radioName"]),
+        "cover": first_str(r, &["picUrl", "picURL", "coverUrl", "coverImgUrl", "avatarUrl"]),
+        "desc": first_str(r, &["desc", "description", "rcmdText"]),
+        "djName": if !s(dj, "nickname").is_empty() { s(dj, "nickname") } else { first_str(r, &["djName", "nickname"]) },
+        "category": first_str(r, &["category", "categoryName"]),
+        "programCount": first_num(r, &["programCount", "programNum", "programCnt"]),
+        "subCount": first_num(r, &["subCount", "subedCount", "subscriberCount"]),
+    })
+}
+
+fn map_podcast_program(p: &Value, fallback_radio: &Value) -> Value {
+    let empty = json!({});
+    let main_song = p.get("mainSong").or_else(|| p.get("song")).or_else(|| p.get("mainTrack")).unwrap_or(&empty);
+    let radio = p.get("radio").unwrap_or(fallback_radio);
+    let mapped_radio = map_podcast_radio(radio);
+    let artists = map_artists(main_song.get("ar").or_else(|| main_song.get("artists")));
+    let album = main_song.get("al").or_else(|| main_song.get("album")).cloned().unwrap_or_else(|| json!({}));
+    let playable_id = main_song.get("id").or_else(|| p.get("mainSongId")).or_else(|| p.get("songId")).cloned().unwrap_or(Value::Null);
+    let radio_name = mapped_radio.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let dj_name = mapped_radio.get("djName").and_then(|x| x.as_str()).unwrap_or("").to_string();
+
+    let name = {
+        let n = s(p, "name");
+        if n.is_empty() { s(main_song, "name").to_string() } else { n.to_string() }
+    };
+    let cover = {
+        let c = first_str(p, &["coverUrl", "cover", "blurCoverUrl"]);
+        if c.is_empty() { mapped_radio.get("cover").and_then(|x| x.as_str()).unwrap_or("").to_string() } else { c.to_string() }
+    };
+    let duration = first_num(p, &["duration"]).as_i64().filter(|d| *d > 0).map(|d| json!(d)).unwrap_or_else(|| first_num(main_song, &["dt", "duration"]));
+    let album_name = if !radio_name.is_empty() { radio_name.clone() } else { s(&album, "name").to_string() };
+    let artist = if !radio_name.is_empty() { radio_name.clone() } else { dj_name.clone() };
+
+    json!({
+        "type": "podcast", "source": "podcast",
+        "id": playable_id,
+        "programId": p.get("id").or_else(|| p.get("programId")).cloned().unwrap_or(Value::Null),
+        "radioId": mapped_radio.get("id").cloned().unwrap_or(Value::Null),
+        "name": name,
+        "artist": artist,
+        "artists": artists,
+        "album": album_name,
+        "cover": cover,
+        "duration": duration,
+        "fee": main_song.get("fee").cloned().unwrap_or(Value::Null),
+        "djName": dj_name,
+        "radioName": radio_name,
+        "desc": first_str(p, &["description", "desc"]),
+        "serialNum": first_num(p, &["serialNum", "serial"]),
+    })
+}
+
+/// /api/podcast/search → { podcasts, total }
+pub async fn podcast_search(client: &reqwest::Client, keywords: &str, limit: i64) -> Result<Value, String> {
+    if keywords.is_empty() {
+        return Ok(json!({ "podcasts": [] }));
+    }
+    let body = eapi_request(client, "/api/cloudsearch/pc", json!({ "s": keywords, "type": 1009, "limit": limit, "offset": 0, "total": true })).await?;
+    let result = body.get("result").cloned().unwrap_or_else(|| json!({}));
+    let podcasts = result.get("djRadios").or_else(|| result.get("djradios")).or_else(|| result.get("radios"))
+        .and_then(|x| x.as_array())
+        .map(|arr| arr.iter().map(map_podcast_radio).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok(json!({ "podcasts": podcasts, "total": result.get("djRadiosCount").cloned().unwrap_or(json!(0)) }))
+}
+
+/// /api/podcast/hot → { podcasts, more }
+pub async fn podcast_hot(client: &reqwest::Client, limit: i64, offset: i64) -> Result<Value, String> {
+    let body = weapi_request(client, "/api/djradio/hot/v1", json!({ "limit": limit, "offset": offset })).await?;
+    let raw = body.get("djRadios").or_else(|| body.get("djradios")).or_else(|| body.get("radios"));
+    let podcasts = raw.and_then(|x| x.as_array()).map(|arr| arr.iter().map(map_podcast_radio).collect::<Vec<_>>()).unwrap_or_default();
+    Ok(json!({ "podcasts": podcasts, "more": body.get("hasMore").cloned().unwrap_or(json!(false)) }))
+}
+
+/// /api/podcast/detail → { podcast }
+pub async fn podcast_detail(client: &reqwest::Client, rid: &str) -> Result<Value, String> {
+    let body = weapi_request(client, "/api/djradio/v2/get", json!({ "id": rid })).await?;
+    let radio = body.get("data").or_else(|| body.get("djRadio")).or_else(|| body.get("radio")).unwrap_or(&body);
+    Ok(json!({ "podcast": map_podcast_radio(radio) }))
+}
+
+/// /api/podcast/programs → { radio, programs, more, total }
+pub async fn podcast_programs(client: &reqwest::Client, rid: &str, limit: i64, offset: i64) -> Result<Value, String> {
+    let body = weapi_request(client, "/api/dj/program/byradio", json!({ "radioId": rid, "limit": limit, "offset": offset, "asc": false })).await?;
+    let raw = body.get("programs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let radio = raw.first().and_then(|p| p.get("radio")).map(map_podcast_radio).unwrap_or_else(|| json!({ "id": rid, "rid": rid }));
+    let programs: Vec<Value> = raw.iter().map(|p| map_podcast_program(p, &radio)).filter(|p| !p.get("id").map(|i| i.is_null()).unwrap_or(true)).collect();
+    Ok(json!({ "radio": radio, "programs": programs, "more": body.get("more").cloned().unwrap_or(json!(false)), "total": body.get("count").cloned().unwrap_or(json!(programs.len())) }))
+}
+
+/// /api/podcast/my → 登录后的播客收藏（首版：登录态返回空集合，未登录 starter）。
+pub async fn podcast_my(client: &reqwest::Client) -> Value {
+    let logged_in = login_info(client).await.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false);
+    let collections: Vec<Value> = ["collect", "created", "liked"]
+        .iter()
+        .map(|k| json!({ "key": k, "items": [] }))
+        .collect();
+    json!({ "loggedIn": logged_in, "collections": collections })
 }
 
 fn map_discover_playlist(pl: &Value) -> Value {

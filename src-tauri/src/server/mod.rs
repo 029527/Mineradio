@@ -76,6 +76,11 @@ fn build_router() -> Router {
         .route("/api/playlist/add-song", axum::routing::post(playlist_add_song))
         .route("/api/weather/radio", get(weather_radio))
         .route("/api/weather/ip-location", get(weather_ip_location))
+        .route("/api/podcast/search", get(podcast_search))
+        .route("/api/podcast/hot", get(podcast_hot))
+        .route("/api/podcast/detail", get(podcast_detail))
+        .route("/api/podcast/programs", get(podcast_programs))
+        .route("/api/podcast/my", get(podcast_my))
         // 未实现的 /api/* 返回 JSON 404（避免落到静态回退被当成 HTML 解析）。
         .route("/api/*rest", get(api_not_found).post(api_not_found))
         .with_state(state);
@@ -245,6 +250,50 @@ async fn weather_ip_location(State(st): State<AppState>) -> Response {
     json_ok(weather::ip_location(&st.client).await)
 }
 
+async fn podcast_search(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let kw = q.get("keywords").cloned().unwrap_or_default();
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(18).clamp(6, 30);
+    match endpoints::podcast_search(&st.client, &kw, limit).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e, "podcasts": [] })),
+    }
+}
+
+async fn podcast_hot(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(18).clamp(6, 30);
+    let offset = q.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    match endpoints::podcast_hot(&st.client, limit, offset).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e, "podcasts": [] })),
+    }
+}
+
+async fn podcast_detail(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(rid) = q.get("id").or_else(|| q.get("rid")).filter(|s| !s.is_empty()) else {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing podcast id" }));
+    };
+    match endpoints::podcast_detail(&st.client, rid).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    }
+}
+
+async fn podcast_programs(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(rid) = q.get("id").or_else(|| q.get("rid")).filter(|s| !s.is_empty()) else {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing podcast id", "programs": [] }));
+    };
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(30).clamp(10, 60);
+    let offset = q.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    match endpoints::podcast_programs(&st.client, rid, limit, offset).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e, "programs": [] })),
+    }
+}
+
+async fn podcast_my(State(st): State<AppState>) -> Response {
+    json_ok(endpoints::podcast_my(&st.client).await)
+}
+
 async fn song_like_check(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
     let ids: Vec<i64> = q
         .get("ids")
@@ -389,5 +438,19 @@ mod login_tests {
             wr["radio"]["title"].as_str().unwrap_or("?"), wsongs);
         assert_eq!(wr["ok"].as_bool(), Some(true), "天气电台应 ok: {wr}");
         assert!(wsongs > 0, "天气电台应有歌曲");
+
+        // 播客热门
+        let ph: serde_json::Value = client.get(format!("{base}/api/podcast/hot")).query(&[("limit", "6")]).send().await.unwrap().json().await.unwrap();
+        let pn = ph["podcasts"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!("播客热门 {pn} 个 (示例: '{}')", ph["podcasts"][0]["name"].as_str().unwrap_or("?"));
+        assert!(pn > 0, "应有热门播客: {ph}");
+
+        // 播客节目（取第一个热门播客的节目）
+        if let Some(rid) = ph["podcasts"][0]["id"].as_i64() {
+            let pp: serde_json::Value = client.get(format!("{base}/api/podcast/programs")).query(&[("id", &rid.to_string())]).send().await.unwrap().json().await.unwrap();
+            let progn = pp["programs"].as_array().map(|a| a.len()).unwrap_or(0);
+            println!("播客 {} 节目 {} 集", rid, progn);
+            assert!(progn > 0, "播客应有节目: {pp}");
+        }
     }
 }
