@@ -1,10 +1,12 @@
 // Mineradio — Tauri 2 + Rust 入口
 //
-// 脚手架阶段：仅建立主窗口并跑通 `tauri dev`。
-// 后续阶段会在 setup 中探测空闲端口、启动内嵌 axum 后端（替换 server.js），
-// 并把主窗口指向 http://127.0.0.1:PORT/。
+// setup 中探测/确定端口、启动内嵌 axum 后端（替换 server.js）。
+// 开发期：后端监听固定端口（rsbuild 代理 /api 到此），窗口仍由 devUrl 加载。
+// 生产期：后端监听空闲端口并把主窗口指向 http://127.0.0.1:PORT/。
 
 pub mod server;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -16,8 +18,32 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
-        .setup(|_app| {
-            tracing::info!("Mineradio 启动");
+        .setup(|app| {
+            let is_dev = tauri::is_dev();
+            let port = if is_dev {
+                std::env::var("MINERADIO_DEV_API_PORT")
+                    .ok()
+                    .and_then(|v| v.parse::<u16>().ok())
+                    .unwrap_or(3000)
+            } else {
+                server::find_free_port().unwrap_or(3000)
+            };
+
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = server::serve(port).await {
+                    tracing::error!("后端启动失败: {e}");
+                }
+            });
+
+            if !is_dev {
+                if let Some(win) = app.get_webview_window("main") {
+                    if let Ok(url) = format!("http://127.0.0.1:{port}/").parse() {
+                        let _ = win.navigate(url);
+                    }
+                }
+            }
+
+            tracing::info!("Mineradio 启动 (port={port}, dev={is_dev})");
             Ok(())
         })
         .run(tauri::generate_context!())
