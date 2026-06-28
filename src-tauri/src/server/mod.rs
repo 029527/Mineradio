@@ -67,6 +67,8 @@ fn build_router() -> Router {
         .route("/api/user/playlists", get(user_playlists))
         .route("/api/playlist/tracks", get(playlist_tracks))
         .route("/api/discover/home", get(discover_home))
+        // 未实现的 /api/* 返回 JSON 404（避免落到静态回退被当成 HTML 解析）。
+        .route("/api/*rest", get(api_not_found).post(api_not_found))
         .with_state(state);
 
     match static_dir() {
@@ -104,6 +106,13 @@ fn json_err(status: axum::http::StatusCode, value: Value) -> Response {
 }
 
 // ---- 路由处理 ----
+
+async fn api_not_found(uri: axum::http::Uri) -> Response {
+    json_err(
+        axum::http::StatusCode::NOT_FOUND,
+        json!({ "error": "NOT_IMPLEMENTED", "path": uri.path() }),
+    )
+}
 
 async fn app_version() -> Response {
     json_ok(json!({
