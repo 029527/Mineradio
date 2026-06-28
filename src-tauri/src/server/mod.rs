@@ -7,6 +7,7 @@
 pub mod netease;
 pub mod proxy;
 pub mod qq;
+pub mod update;
 pub mod weather;
 
 use std::collections::HashMap;
@@ -55,6 +56,7 @@ fn build_router() -> Router {
 
     let api = Router::new()
         .route("/api/app/version", get(app_version))
+        .route("/api/update/latest", get(update_latest))
         .route("/api/search", get(search))
         .route("/api/song/url", get(song_url))
         .route("/api/lyric", get(lyric))
@@ -133,6 +135,10 @@ async fn api_not_found(uri: axum::http::Uri) -> Response {
         axum::http::StatusCode::NOT_FOUND,
         json!({ "error": "NOT_IMPLEMENTED", "path": uri.path() }),
     )
+}
+
+async fn update_latest(State(st): State<AppState>) -> Response {
+    json_ok(update::latest(&st.client).await)
 }
 
 async fn app_version() -> Response {
@@ -519,5 +525,13 @@ mod login_tests {
             println!("QQ song/url: provider={}, playable={}, url={}", qu["provider"], qu["playable"], !qu["url"].as_str().unwrap_or("").is_empty());
             assert_eq!(qu["provider"].as_str(), Some("qq"));
         }
+
+        // 更新检查
+        let up: serde_json::Value = client.get(format!("{base}/api/update/latest")).send().await.unwrap().json().await.unwrap();
+        println!("更新检查: 当前 {} / 最新 {} / 有更新={} / 资产='{}'",
+            up["currentVersion"].as_str().unwrap_or("?"), up["latestVersion"].as_str().unwrap_or("?"),
+            up["updateAvailable"], up["release"]["asset"]["name"].as_str().unwrap_or("无"));
+        assert!(up["latestVersion"].as_str().is_some(), "应有 latestVersion: {up}");
+        assert!(up["configured"].as_bool().unwrap_or(false), "更新应已配置");
     }
 }
