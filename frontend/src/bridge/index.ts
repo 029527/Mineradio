@@ -47,7 +47,8 @@ if (tauri) {
     exitFullscreenWindowed: () => invoke('desktop_window_exit_fullscreen_windowed'),
     getState: () => invoke('desktop_window_get_state'),
     close: () => invoke('desktop_window_close'),
-    openNeteaseMusicLogin: () => invoke('netease_music_open_login'),
+    // 不暴露 openNeteaseMusicLogin：网易云走应用内扫码(/api/login/qr/*)，体验更顺、更稳。
+    // (前端据 typeof openNeteaseMusicLogin === 'function' 决定二维码 vs 网页登录)
     clearNeteaseMusicLogin: () => invoke('netease_music_clear_login'),
     openQQMusicLogin: () => invoke('qq_music_open_login'),
     clearQQMusicLogin: () => invoke('qq_music_clear_login'),
