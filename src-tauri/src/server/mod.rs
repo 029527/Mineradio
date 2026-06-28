@@ -6,6 +6,7 @@
 
 pub mod netease;
 pub mod proxy;
+pub mod qq;
 pub mod weather;
 
 use std::collections::HashMap;
@@ -81,6 +82,12 @@ fn build_router() -> Router {
         .route("/api/podcast/detail", get(podcast_detail))
         .route("/api/podcast/programs", get(podcast_programs))
         .route("/api/podcast/my", get(podcast_my))
+        .route("/api/qq/search", get(qq_search))
+        .route("/api/qq/song/url", get(qq_song_url))
+        .route("/api/qq/lyric", get(qq_lyric))
+        .route("/api/qq/login/status", get(qq_login_status))
+        .route("/api/qq/login/cookie", axum::routing::post(qq_login_cookie))
+        .route("/api/qq/logout", get(qq_logout))
         // 未实现的 /api/* 返回 JSON 404（避免落到静态回退被当成 HTML 解析）。
         .route("/api/*rest", get(api_not_found).post(api_not_found))
         .with_state(state);
@@ -294,6 +301,46 @@ async fn podcast_my(State(st): State<AppState>) -> Response {
     json_ok(endpoints::podcast_my(&st.client).await)
 }
 
+// ---- QQ 音乐 ----
+
+async fn qq_search(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let kw = q.get("keywords").cloned().unwrap_or_default();
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(8).clamp(4, 12);
+    json_ok(qq::search(&st.client, &kw, limit).await)
+}
+
+async fn qq_song_url(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let mid = q.get("mid").or_else(|| q.get("id")).cloned().unwrap_or_default();
+    let media_mid = q.get("mediaMid").or_else(|| q.get("media_mid")).cloned().unwrap_or_default();
+    let quality = q.get("quality").cloned().unwrap_or_default();
+    json_ok(qq::song_url(&st.client, &mid, &media_mid, &quality).await)
+}
+
+async fn qq_lyric(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let mid = q.get("mid").or_else(|| q.get("songmid")).cloned().unwrap_or_default();
+    let id = q.get("id").or_else(|| q.get("qqId")).cloned().unwrap_or_default();
+    if mid.is_empty() && id.is_empty() {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "provider": "qq", "error": "Missing QQ song mid or id", "lyric": "" }));
+    }
+    json_ok(qq::lyric(&st.client, &mid, &id).await)
+}
+
+async fn qq_login_status() -> Response {
+    json_ok(qq::login_status())
+}
+
+async fn qq_login_cookie(body: String) -> Response {
+    let raw = serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|v| v.get("cookie").or_else(|| v.get("data")).or_else(|| v.get("text")).and_then(|x| x.as_str()).map(String::from))
+        .unwrap_or(body);
+    json_ok(qq::login_cookie(&raw))
+}
+
+async fn qq_logout() -> Response {
+    json_ok(qq::logout())
+}
+
 async fn song_like_check(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
     let ids: Vec<i64> = q
         .get("ids")
@@ -451,6 +498,26 @@ mod login_tests {
             let progn = pp["programs"].as_array().map(|a| a.len()).unwrap_or(0);
             println!("播客 {} 节目 {} 集", rid, progn);
             assert!(progn > 0, "播客应有节目: {pp}");
+        }
+
+        // QQ 音乐搜索
+        let qs: serde_json::Value = client.get(format!("{base}/api/qq/search")).query(&[("keywords", "周杰伦"), ("limit", "5")]).send().await.unwrap().json().await.unwrap();
+        let qn = qs["songs"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!("QQ 搜索 {} 首 (示例: '{}' / '{}', cover={})", qn,
+            qs["songs"][0]["name"].as_str().unwrap_or("?"), qs["songs"][0]["artist"].as_str().unwrap_or("?"),
+            !qs["songs"][0]["cover"].as_str().unwrap_or("").is_empty());
+        assert!(qn > 0, "QQ 应有搜索结果: {qs}");
+
+        // QQ 歌词
+        if let Some(mid) = qs["songs"][0]["mid"].as_str() {
+            let ql: serde_json::Value = client.get(format!("{base}/api/qq/lyric")).query(&[("mid", mid)]).send().await.unwrap().json().await.unwrap();
+            let has = !ql["lyric"].as_str().unwrap_or("").is_empty();
+            println!("QQ 歌词 mid={mid}: {}字符", ql["lyric"].as_str().unwrap_or("").chars().count());
+            assert!(has, "QQ 歌词应非空: {ql}");
+            // QQ song url（匿名通常试听/受限，校验返回结构）
+            let qu: serde_json::Value = client.get(format!("{base}/api/qq/song/url")).query(&[("mid", mid)]).send().await.unwrap().json().await.unwrap();
+            println!("QQ song/url: provider={}, playable={}, url={}", qu["provider"], qu["playable"], !qu["url"].as_str().unwrap_or("").is_empty());
+            assert_eq!(qu["provider"].as_str(), Some("qq"));
         }
     }
 }

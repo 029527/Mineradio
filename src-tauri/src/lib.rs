@@ -81,6 +81,7 @@ pub fn run() {
             if let Ok(dir) = app.path().app_data_dir() {
                 let _ = std::fs::create_dir_all(&dir);
                 server::netease::cookie_store::init(dir.join("netease.cookie"));
+                server::qq::init(dir.join("qq.cookie"));
             }
 
             tauri::async_runtime::spawn(async move {
