@@ -67,6 +67,12 @@ fn build_router() -> Router {
         .route("/api/user/playlists", get(user_playlists))
         .route("/api/playlist/tracks", get(playlist_tracks))
         .route("/api/discover/home", get(discover_home))
+        .route("/api/song/like/check", get(song_like_check))
+        .route("/api/song/like", get(song_like))
+        .route("/api/song/comments", get(song_comments))
+        .route("/api/artist/detail", get(artist_detail))
+        .route("/api/playlist/create", get(playlist_create))
+        .route("/api/playlist/add-song", axum::routing::post(playlist_add_song))
         // 未实现的 /api/* 返回 JSON 404（避免落到静态回退被当成 HTML 解析）。
         .route("/api/*rest", get(api_not_found).post(api_not_found))
         .with_state(state);
@@ -224,6 +230,69 @@ async fn discover_home(State(st): State<AppState>) -> Response {
     json_ok(endpoints::discover_home(&st.client).await)
 }
 
+async fn song_like_check(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let ids: Vec<i64> = q
+        .get("ids")
+        .or_else(|| q.get("id"))
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse::<i64>().ok()).collect())
+        .unwrap_or_default();
+    json_ok(endpoints::song_like_check(&st.client, ids).await)
+}
+
+async fn song_like(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let id = q.get("id").cloned().unwrap_or_default();
+    let like = q.get("like").map(|v| v != "false").unwrap_or(true);
+    if id.is_empty() {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing song id" }));
+    }
+    json_ok(endpoints::song_like(&st.client, &id, like).await)
+}
+
+async fn song_comments(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(id) = q.get("id").filter(|s| !s.is_empty()) else {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing song id", "comments": [] }));
+    };
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(20).clamp(6, 50);
+    let offset = q.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    match endpoints::song_comments(&st.client, id, limit, offset).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e, "comments": [] })),
+    }
+}
+
+async fn artist_detail(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(id) = q.get("id").filter(|s| !s.is_empty()) else {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing artist id", "songs": [] }));
+    };
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(30).clamp(10, 80);
+    match endpoints::artist_detail(&st.client, id, limit).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e, "songs": [] })),
+    }
+}
+
+async fn playlist_create(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(name) = q.get("name").filter(|s| !s.is_empty()) else {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing playlist name" }));
+    };
+    let privacy = q.get("privacy").cloned().unwrap_or_else(|| "0".into());
+    json_ok(endpoints::playlist_create(&st.client, name, &privacy).await)
+}
+
+async fn playlist_add_song(State(st): State<AppState>, body: String) -> Response {
+    let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let pid = v.get("pid").and_then(|x| x.as_str().map(String::from).or_else(|| x.as_i64().map(|n| n.to_string()))).unwrap_or_default();
+    let id = v
+        .get("id")
+        .or_else(|| v.get("ids"))
+        .and_then(|x| x.as_str().map(String::from).or_else(|| x.as_i64().map(|n| n.to_string())))
+        .unwrap_or_default();
+    if pid.is_empty() || id.is_empty() {
+        return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing playlist id or song id" }));
+    }
+    json_ok(endpoints::playlist_add_song(&st.client, &pid, &id).await)
+}
+
 async fn playlist_tracks(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
     let Some(id) = q.get("id").filter(|s| !s.is_empty()) else {
         return json_err(axum::http::StatusCode::BAD_REQUEST, json!({ "error": "Missing playlist id", "tracks": [] }));
@@ -284,5 +353,17 @@ mod login_tests {
         println!("歌单 '{}' 取到 {} 首", pt["playlist"]["name"].as_str().unwrap_or("?"), tracks);
         assert!(tracks > 0, "公开歌单应有歌曲: {pt}");
         assert!(pt["tracks"][0]["name"].as_str().is_some(), "歌曲缺 name");
+
+        // 评论（公开热评，匿名可取）
+        let cm: serde_json::Value = client.get(format!("{base}/api/song/comments")).query(&[("id", "210049")]).send().await.unwrap().json().await.unwrap();
+        let n = cm["comments"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!("评论取到 {n} 条 (hot={})", cm["hot"]);
+        assert!(n > 0, "应有热评: {cm}");
+
+        // 歌手页（周杰伦 6452，匿名可取热门歌）
+        let ar: serde_json::Value = client.get(format!("{base}/api/artist/detail")).query(&[("id", "6452")]).send().await.unwrap().json().await.unwrap();
+        let asongs = ar["songs"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!("歌手 '{}' 取到 {} 首热门歌", ar["artist"]["name"].as_str().unwrap_or("?"), asongs);
+        assert!(asongs > 0, "歌手应有热门歌: {ar}");
     }
 }

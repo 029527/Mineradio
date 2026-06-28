@@ -420,6 +420,172 @@ pub async fn playlist_tracks(client: &reqwest::Client, id: &str) -> Result<Value
     Ok(json!({ "playlist": meta, "tracks": tracks }))
 }
 
+// ---------------- 收藏 / 歌手 / 评论 / 歌单操作 ----------------
+
+/// /api/song/like/check?ids= → { loggedIn, ids, liked: {id: bool} }
+pub async fn song_like_check(client: &reqwest::Client, ids: Vec<i64>) -> Value {
+    let info = login_info(client).await;
+    let logged_in = info.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false);
+    let user_id = info.get("userId").cloned().unwrap_or(Value::Null);
+    if !logged_in {
+        return json!({ "loggedIn": false, "ids": ids, "liked": {} });
+    }
+    // 取用户全部红心 id 做成员判断（likelist，稳定）。
+    let liked_ids: Vec<i64> = weapi_request(client, "/api/song/like/get", json!({ "uid": user_id }))
+        .await
+        .ok()
+        .and_then(|b| b.get("ids").and_then(|x| x.as_array()).cloned())
+        .map(|arr| arr.iter().filter_map(|i| i.as_i64()).collect())
+        .unwrap_or_default();
+    let set: std::collections::HashSet<i64> = liked_ids.into_iter().collect();
+    let mut liked = serde_json::Map::new();
+    for id in &ids {
+        liked.insert(id.to_string(), json!(set.contains(id)));
+    }
+    json!({ "loggedIn": true, "ids": ids, "liked": liked })
+}
+
+/// /api/song/like?id=&like= → 红心/取消
+pub async fn song_like(client: &reqwest::Client, id: &str, like: bool) -> Value {
+    if !cookie_store::is_logged_in() {
+        return json!({ "loggedIn": false, "error": "LOGIN_REQUIRED" });
+    }
+    let data = json!({ "alg": "itembased", "trackId": id, "like": like.to_string(), "time": "3" });
+    match weapi_request(client, "/api/radio/like", data).await {
+        Ok(body) => {
+            let code = body.get("code").and_then(|c| c.as_i64()).unwrap_or(200);
+            json!({ "loggedIn": true, "id": id, "liked": like, "code": code, "body": body })
+        }
+        Err(e) => json!({ "loggedIn": true, "id": id, "error": e }),
+    }
+}
+
+/// /api/song/comments?id= → { id, total, comments, hot }
+pub async fn song_comments(client: &reqwest::Client, id: &str, limit: i64, offset: i64) -> Result<Value, String> {
+    let uri = format!("/api/v1/resource/comments/R_SO_4_{id}");
+    let data = json!({ "rid": id, "limit": limit, "offset": offset, "beforeTime": 0 });
+    let body = weapi_request(client, &uri, data).await?;
+    let hot = body.get("hotComments").and_then(|x| x.as_array()).is_some() && offset == 0;
+    let raw = if hot {
+        body.get("hotComments")
+    } else {
+        body.get("comments")
+    };
+    let comments = raw
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    let content = s(c, "content");
+                    if content.is_empty() {
+                        return None;
+                    }
+                    Some(json!({
+                        "id": c.get("commentId").cloned().unwrap_or(Value::Null),
+                        "content": content,
+                        "likedCount": c.get("likedCount").cloned().unwrap_or(json!(0)),
+                        "time": c.get("time").cloned().unwrap_or(json!(0)),
+                        "user": c.get("user").map(|u| json!({
+                            "id": u.get("userId").cloned().unwrap_or(Value::Null),
+                            "nickname": s(u, "nickname"),
+                            "avatar": s(u, "avatarUrl"),
+                        })),
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(json!({ "id": id, "total": body.get("total").cloned().unwrap_or(json!(0)), "comments": comments, "hot": hot }))
+}
+
+/// /api/artist/detail?id= → { id, artist, songs }
+pub async fn artist_detail(client: &reqwest::Client, id: &str, limit: i64) -> Result<Value, String> {
+    let detail = eapi_request(client, "/api/artist/head/info/get", json!({ "id": id }))
+        .await
+        .unwrap_or_else(|_| json!({}));
+
+    let mut raw_songs = eapi_request(
+        client,
+        "/api/v1/artist/songs",
+        json!({ "id": id, "private_cloud": "true", "work_type": 1, "order": "hot", "offset": 0, "limit": limit }),
+    )
+    .await
+    .ok()
+    .and_then(|b| b.get("songs").and_then(|x| x.as_array()).cloned())
+    .unwrap_or_default();
+
+    if raw_songs.is_empty() {
+        raw_songs = weapi_request(client, "/api/artist/top/song", json!({ "id": id }))
+            .await
+            .ok()
+            .and_then(|b| b.get("songs").and_then(|x| x.as_array()).cloned())
+            .unwrap_or_default();
+    }
+
+    let songs: Vec<Value> = raw_songs.iter().map(map_song_record).take(limit as usize).collect();
+    let a = detail
+        .get("data")
+        .and_then(|d| d.get("artist"))
+        .or_else(|| detail.get("artist"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Ok(json!({
+        "id": id,
+        "artist": {
+            "id": a.get("id").cloned().unwrap_or_else(|| json!(id)),
+            "name": a.get("name").and_then(|x| x.as_str()).or_else(|| a.get("artistName").and_then(|x| x.as_str())).unwrap_or(""),
+            "avatar": a.get("avatar").or_else(|| a.get("cover")).or_else(|| a.get("picUrl")).or_else(|| a.get("img1v1Url")).and_then(|x| x.as_str()).unwrap_or(""),
+            "brief": a.get("briefDesc").or_else(|| a.get("description")).and_then(|x| x.as_str()).unwrap_or(""),
+            "musicSize": a.get("musicSize").or_else(|| a.get("songSize")).cloned().unwrap_or(json!(0)),
+            "albumSize": a.get("albumSize").cloned().unwrap_or(json!(0)),
+        },
+        "songs": songs,
+    }))
+}
+
+/// /api/playlist/create?name= → 新建歌单
+pub async fn playlist_create(client: &reqwest::Client, name: &str, privacy: &str) -> Value {
+    if !cookie_store::is_logged_in() {
+        return json!({ "loggedIn": false, "error": "LOGIN_REQUIRED" });
+    }
+    let data = json!({ "name": name, "privacy": privacy, "type": "NORMAL" });
+    match weapi_request(client, "/api/playlist/create", data).await {
+        Ok(body) => json!({ "loggedIn": true, "playlist": body.get("playlist").or_else(|| body.get("id")).cloned().unwrap_or(Value::Null), "body": body }),
+        Err(e) => json!({ "loggedIn": true, "error": e }),
+    }
+}
+
+/// /api/playlist/add-song (POST {pid,id}) → 收藏歌曲到歌单
+pub async fn playlist_add_song(client: &reqwest::Client, pid: &str, id: &str) -> Value {
+    if !cookie_store::is_logged_in() {
+        return json!({ "loggedIn": false, "error": "LOGIN_REQUIRED" });
+    }
+    let track_ids = format!("[\"{id}\"]");
+    // 优先 manipulate/tracks(eapi)，失败回退 track/add(weapi)
+    let primary = eapi_request(
+        client,
+        "/api/playlist/manipulate/tracks",
+        json!({ "op": "add", "pid": pid, "trackIds": track_ids, "imme": "true" }),
+    )
+    .await;
+    let ok = primary
+        .as_ref()
+        .ok()
+        .and_then(|b| b.get("code").and_then(|c| c.as_i64()))
+        .map(|c| c == 200)
+        .unwrap_or(false);
+    if ok {
+        return json!({ "loggedIn": true, "pid": pid, "id": id, "success": true, "code": 200 });
+    }
+    let fallback = weapi_request(client, "/api/playlist/track/add", json!({ "pid": pid, "ids": id })).await;
+    let code = fallback.as_ref().ok().and_then(|b| b.get("code").and_then(|c| c.as_i64())).unwrap_or(0);
+    json!({
+        "loggedIn": true, "pid": pid, "id": id,
+        "success": code == 200, "code": code,
+        "body": fallback.unwrap_or(Value::Null),
+    })
+}
+
 fn map_discover_playlist(pl: &Value) -> Value {
     json!({
         "provider": "netease",
