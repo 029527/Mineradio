@@ -58,6 +58,14 @@ fn build_router() -> Router {
         .route("/api/lyric", get(lyric))
         .route("/api/cover", get(proxy::cover))
         .route("/api/audio", get(proxy::audio))
+        .route("/api/login/qr/key", get(login_qr_key))
+        .route("/api/login/qr/create", get(login_qr_create))
+        .route("/api/login/qr/check", get(login_qr_check))
+        .route("/api/login/status", get(login_status))
+        .route("/api/logout", get(logout))
+        .route("/api/login/cookie", axum::routing::post(login_cookie))
+        .route("/api/user/playlists", get(user_playlists))
+        .route("/api/discover/home", get(discover_home))
         .with_state(state);
 
     match static_dir() {
@@ -149,5 +157,105 @@ async fn lyric(State(st): State<AppState>, Query(q): Query<HashMap<String, Strin
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": e, "lyric": "" }),
         ),
+    }
+}
+
+// ---- 登录 / 用户 ----
+
+async fn login_qr_key(State(st): State<AppState>) -> Response {
+    match endpoints::login_qr_key(&st.client).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    }
+}
+
+async fn login_qr_create(Query(q): Query<HashMap<String, String>>) -> Response {
+    let key = q.get("key").map(|s| s.as_str()).unwrap_or("");
+    json_ok(endpoints::login_qr_create(key))
+}
+
+async fn login_qr_check(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let key = q.get("key").map(|s| s.as_str()).unwrap_or("");
+    match endpoints::login_qr_check(&st.client, key).await {
+        Ok(v) => json_ok(v),
+        Err(e) => json_err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    }
+}
+
+async fn login_status(State(st): State<AppState>) -> Response {
+    json_ok(endpoints::login_status(&st.client).await)
+}
+
+async fn logout(State(st): State<AppState>) -> Response {
+    json_ok(endpoints::logout(&st.client).await)
+}
+
+async fn login_cookie(State(st): State<AppState>, body: String) -> Response {
+    // 接受 JSON {cookie|data|text} 或原始 cookie 串。
+    let raw = serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("cookie")
+                .or_else(|| v.get("data"))
+                .or_else(|| v.get("text"))
+                .and_then(|x| x.as_str())
+                .map(String::from)
+        })
+        .unwrap_or(body);
+    json_ok(endpoints::login_cookie(&st.client, &raw).await)
+}
+
+async fn user_playlists(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(60).clamp(12, 100);
+    json_ok(endpoints::user_playlists(&st.client, limit).await)
+}
+
+async fn discover_home(State(st): State<AppState>) -> Response {
+    json_ok(endpoints::discover_home(&st.client).await)
+}
+
+#[cfg(test)]
+mod login_tests {
+    use std::time::Duration;
+
+    const PORT: u16 = 34572;
+
+    // 联网测试：cargo test --lib -- --ignored --nocapture login_qr_flow
+    #[ignore]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn login_qr_flow_anonymous() {
+        tokio::spawn(async move {
+            let _ = super::serve(PORT).await;
+        });
+        let base = format!("http://127.0.0.1:{PORT}");
+        let client = reqwest::Client::new();
+        for _ in 0..50 {
+            if client.get(format!("{base}/api/app/version")).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let key_resp: serde_json::Value = client.get(format!("{base}/api/login/qr/key")).send().await.unwrap().json().await.unwrap();
+        let key = key_resp["key"].as_str().expect("无 unikey");
+        println!("unikey = {key}");
+        assert!(!key.is_empty());
+
+        let create: serde_json::Value = client.get(format!("{base}/api/login/qr/create")).query(&[("key", key)]).send().await.unwrap().json().await.unwrap();
+        let img = create["img"].as_str().unwrap_or("");
+        println!("qr img prefix = {}", &img.chars().take(30).collect::<String>());
+        assert!(img.starts_with("data:image/png;base64,"), "二维码非 PNG data URL");
+
+        let check: serde_json::Value = client.get(format!("{base}/api/login/qr/check")).query(&[("key", key)]).send().await.unwrap().json().await.unwrap();
+        let code = check["code"].as_i64().unwrap_or(0);
+        println!("qr check code = {code} (801=等待扫码)");
+        assert!(code == 801 || code == 800, "未扫码应为 801/800, 实际 {code}: {check}");
+
+        let pl: serde_json::Value = client.get(format!("{base}/api/user/playlists")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(pl["loggedIn"].as_bool(), Some(false), "匿名应未登录");
+
+        let home: serde_json::Value = client.get(format!("{base}/api/discover/home")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(home["mode"].as_str(), Some("starter"), "匿名首页应为 starter");
+        println!("登录链路匿名态全部符合预期");
     }
 }

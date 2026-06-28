@@ -4,3 +4,4 @@ pub mod client;
 pub mod cookie_store;
 pub mod crypto;
 pub mod endpoints;
+pub mod qr;

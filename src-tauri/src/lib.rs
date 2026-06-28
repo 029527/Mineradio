@@ -64,6 +64,12 @@ pub fn run() {
             };
             commands::set_frontend_base(frontend_base);
 
+            // 网易云 cookie 持久化路径（应用数据目录 / .cookie）。
+            if let Ok(dir) = app.path().app_data_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                server::netease::cookie_store::init(dir.join("netease.cookie"));
+            }
+
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = server::serve(port).await {
                     tracing::error!("后端启动失败: {e}");
