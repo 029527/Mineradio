@@ -5,6 +5,7 @@
 //! 由调用方探测空闲端口并把主窗口指向本服务。
 
 pub mod netease;
+pub mod proxy;
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
@@ -23,8 +24,8 @@ use tower_http::services::ServeDir;
 use netease::endpoints;
 
 #[derive(Clone)]
-struct AppState {
-    client: reqwest::Client,
+pub struct AppState {
+    pub client: reqwest::Client,
 }
 
 /// 探测一个空闲 TCP 端口。
@@ -55,6 +56,8 @@ fn build_router() -> Router {
         .route("/api/search", get(search))
         .route("/api/song/url", get(song_url))
         .route("/api/lyric", get(lyric))
+        .route("/api/cover", get(proxy::cover))
+        .route("/api/audio", get(proxy::audio))
         .with_state(state);
 
     match static_dir() {
