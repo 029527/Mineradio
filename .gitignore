@@ -45,3 +45,5 @@ tmp/
 *.png.tmp
 verification/
 screenshots/
+
+.vscode/

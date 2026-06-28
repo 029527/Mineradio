@@ -1,29 +1,34 @@
 import { defineConfig } from '@rsbuild/core';
 
-// 后端 axum 在开发期固定监听该端口（生产期由 Rust 探测空闲端口并同源服务）。
+// 后端 axum 开发期固定端口（生产期由 Rust 探测空闲端口并同源服务）。
 const DEV_API_PORT = Number(process.env.MINERADIO_DEV_API_PORT || 3000);
 
+// 迁移策略：现有三个 HTML（index/wallpaper/desktop-lyrics，含大量祖传内联 JS）
+// 作为静态资源原样保留在 public/，不经 HTML 转换，零破坏风险。rsbuild 仅负责：
+//   1. 构建 Tauri 桥接层 bridge.ts → /static/js/bridge.js（被各 HTML 引用）
+//   2. 开发期 dev server：把 public/ 服务到根，并代理 /api 到 axum
 export default defineConfig({
-  // 多页面：主界面 / 桌面歌词覆盖层 / 壁纸覆盖层
   source: {
     entry: {
-      index: './src/index.ts',
+      bridge: './src/bridge/index.ts',
     },
   },
-  html: {
-    template: './src/index.html',
+  output: {
+    distPath: { root: 'dist' },
+    // 固定文件名，便于静态 HTML 以 /static/js/bridge.js 稳定引用。
+    filenameHash: false,
+    // 不向 HTML 自动注入（HTML 自管引用）。
+    injectStyles: false,
+  },
+  tools: {
+    // 现有 HTML 已是完整页面，禁用 rsbuild 的 HTML 生成。
+    htmlPlugin: false,
   },
   server: {
     port: 1420,
     strictPort: true,
-    // 开发期把 /api 转发到本地 axum 后端，保持前端同源 fetch('/api/...') 不变
     proxy: {
       '/api': `http://127.0.0.1:${DEV_API_PORT}`,
-    },
-  },
-  output: {
-    distPath: {
-      root: 'dist',
     },
   },
 });
