@@ -98,4 +98,30 @@ if (tauri) {
   } else {
     markShell();
   }
+
+  // 无边框窗口：让应用自绘标题栏可拖动/双击最大化（替代 Electron 的 -webkit-app-region）。
+  const tauriWindow = (window as any).__TAURI__?.window;
+  if (tauriWindow?.getCurrentWindow) {
+    const appWindow = tauriWindow.getCurrentWindow();
+    const inDragRegion = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el || !el.closest) return false;
+      // 控件/按钮/输入不触发拖动
+      if (el.closest('.desktop-window-controls, button, input, a, select, textarea, [data-window-action], .desktop-mode-btn')) {
+        return false;
+      }
+      return !!el.closest('#desktop-titlebar, .desktop-drag-region');
+    };
+    window.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      if (inDragRegion(e.target)) {
+        appWindow.startDragging?.().catch(() => {});
+      }
+    });
+    window.addEventListener('dblclick', (e) => {
+      if (inDragRegion(e.target)) {
+        invoke('desktop_window_toggle_maximize').catch(() => {});
+      }
+    });
+  }
 }
