@@ -4,6 +4,7 @@
 //! `MINERADIO_DEV_API_PORT`（默认 3000，rsbuild 代理 /api 到此）；生产期
 //! 由调用方探测空闲端口并把主窗口指向本服务。
 
+pub mod dj_analyzer;
 pub mod netease;
 pub mod proxy;
 pub mod qq;
@@ -84,6 +85,9 @@ fn build_router() -> Router {
         .route("/api/podcast/detail", get(podcast_detail))
         .route("/api/podcast/programs", get(podcast_programs))
         .route("/api/podcast/my", get(podcast_my))
+        .route("/api/podcast/dj-beatmap", get(podcast_dj_beatmap))
+        .route("/api/beatmap/cache/status", get(beatmap_cache_status))
+        .route("/api/beatmap/cache", get(beatmap_cache_get).post(beatmap_cache_post))
         .route("/api/qq/search", get(qq_search))
         .route("/api/qq/song/url", get(qq_song_url))
         .route("/api/qq/lyric", get(qq_lyric))
@@ -317,6 +321,36 @@ async fn podcast_programs(State(st): State<AppState>, Query(q): Query<HashMap<St
 
 async fn podcast_my(State(st): State<AppState>) -> Response {
     json_ok(endpoints::podcast_my(&st.client).await)
+}
+
+async fn podcast_dj_beatmap(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(url) = q.get("url").filter(|u| u.starts_with("http")) else {
+        return json_err(StatusCode::BAD_REQUEST, json!({ "error": "Invalid audio url" }));
+    };
+    let duration = q.get("duration").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).max(0.0);
+    let intro = q.get("intro").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).max(0.0);
+    let result = if intro > 0.0 {
+        dj_analyzer::analyze_intro(&st.client, url, duration, intro).await
+    } else {
+        dj_analyzer::analyze_stream(&st.client, url, duration).await
+    };
+    match result {
+        Ok(map) => json_ok(json!({ "ok": true, "map": map })),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "ok": false, "error": e })),
+    }
+}
+
+// 节拍图缓存：内存模式（客户端自行缓存；服务端不持久化）。
+async fn beatmap_cache_status() -> Response {
+    json_ok(json!({ "enabled": false, "mode": "memory-only", "reason": "SERVER_CACHE_DISABLED" }))
+}
+
+async fn beatmap_cache_get(Query(q): Query<HashMap<String, String>>) -> Response {
+    json_ok(json!({ "ok": true, "hit": false, "key": q.get("key").cloned().unwrap_or_default() }))
+}
+
+async fn beatmap_cache_post() -> Response {
+    json_ok(json!({ "ok": true, "enabled": false, "mode": "memory-only" }))
 }
 
 // ---- QQ 音乐 ----

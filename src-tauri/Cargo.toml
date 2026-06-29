@@ -48,6 +48,9 @@ rand = "0.8"
 qrcode = { version = "0.14", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# 播客 DJ 节拍图：MP3 解码
+symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
+
 # 日志
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
