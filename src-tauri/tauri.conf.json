@@ -19,12 +19,24 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Music",
+    "copyright": "© 2026 Mineradio",
+    "shortDescription": "沉浸式音乐播放器",
+    "longDescription": "Mineradio 沉浸式音乐播放器：天气电台、搜索播放、歌词舞台、粒子视觉与播客 DJ 节拍。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }
