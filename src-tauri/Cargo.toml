@@ -25,7 +25,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["http1", "tokio"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors"] }
+# 前端静态资源嵌入：debug 期从磁盘读(改完前端重建即可)，release 期编入二进制(打包后可用)
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
 reqwest = { version = "0.12", features = ["json", "stream", "gzip", "cookies"] }
 bytes = "1"
 futures-util = "0.3"

@@ -11,39 +11,34 @@ pub mod update;
 pub mod weather;
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::net::{Ipv4Addr, TcpListener};
 
 use axum::{
     extract::{Query, State},
-    http::header,
+    http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use serde_json::{json, Value};
-use tower_http::services::ServeDir;
 
 use netease::endpoints;
+
+/// 前端静态资源：debug 期从磁盘 `../frontend/dist` 读取（改完前端 `bun run build` 即可刷新），
+/// release 期编入二进制（打包后无需外部目录）。
+#[derive(rust_embed::RustEmbed)]
+#[folder = "../frontend/dist"]
+struct FrontendAssets;
 
 #[derive(Clone)]
 pub struct AppState {
     pub client: reqwest::Client,
 }
 
-/// 探测一个空闲 TCP 端口。
-pub fn find_free_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    Ok(listener.local_addr()?.port())
-}
-
-/// 前端静态资源目录（生产期由打包阶段最终确定；开发期回退到源码树）。
-fn static_dir() -> Option<PathBuf> {
-    let candidates = [
-        PathBuf::from("../frontend/dist"),
-        PathBuf::from("frontend/dist"),
-    ];
-    candidates.into_iter().find(|p| p.is_dir())
+/// 绑定一个随机空闲高位端口的监听器（127.0.0.1）。绑定即处于 LISTEN 状态，
+/// 故可在启动 axum 前先建窗口而不丢连接。
+pub fn bind_listener() -> std::io::Result<TcpListener> {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
 }
 
 fn build_router() -> Router {
@@ -99,21 +94,33 @@ fn build_router() -> Router {
         .route("/api/*rest", get(api_not_found).post(api_not_found))
         .with_state(state);
 
-    match static_dir() {
-        Some(dir) => {
-            tracing::info!("静态资源目录: {}", dir.display());
-            api.fallback_service(ServeDir::new(dir))
+    // 非 /api 路径 → 嵌入式前端静态资源
+    api.fallback(static_asset)
+}
+
+/// 从嵌入资源返回前端文件（`/` → index.html）。
+async fn static_asset(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    match FrontendAssets::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (
+                [(header::CONTENT_TYPE, mime.as_ref().to_string())],
+                content.data.into_owned(),
+            )
+                .into_response()
         }
-        None => api,
+        None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
     }
 }
 
-/// 在指定端口启动后端（阻塞于 serve）。供 tokio 任务调用。
-pub async fn serve(port: u16) -> std::io::Result<()> {
+/// 用已绑定的监听器启动后端（阻塞于 serve）。供 tokio 任务调用。
+pub async fn serve(listener: TcpListener) -> std::io::Result<()> {
     let app = build_router();
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("Mineradio 后端监听 http://{addr}");
+    listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(listener)?;
+    tracing::info!("Mineradio 后端监听 http://{}", listener.local_addr()?);
     axum::serve(listener, app).await
 }
 
@@ -154,9 +161,9 @@ async fn app_version() -> Response {
         "update": {
             "provider": "github",
             "configured": true,
-            "owner": "XxHuberrr",
+            "owner": "029527",
             "repo": "Mineradio",
-            "preview": true,
+            "preview": false,
             "manifestOverride": false,
         },
     }))

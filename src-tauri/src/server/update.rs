@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-const OWNER: &str = "XxHuberrr";
+const OWNER: &str = "029527";
 const REPO: &str = "Mineradio";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 

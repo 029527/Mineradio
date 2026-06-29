@@ -60,46 +60,48 @@ pub fn run() {
             commands::open_update_installer,
         ])
         .setup(|app| {
-            let is_dev = tauri::is_dev();
-            let port = if is_dev {
-                std::env::var("MINERADIO_DEV_API_PORT")
-                    .ok()
-                    .and_then(|v| v.parse::<u16>().ok())
-                    .unwrap_or(3000)
-            } else {
-                server::find_free_port().unwrap_or(3000)
-            };
+            // 随机空闲高位端口；axum 同源服务前端静态资源(嵌入) + /api，dev/prod 一致。
+            let listener = server::bind_listener()?;
+            let port = listener.local_addr()?.port();
+            let base = format!("http://127.0.0.1:{port}");
+            commands::set_frontend_base(base.clone());
 
-            // 覆盖层窗口加载基址：开发期走 rsbuild(1420)，生产期走 axum。
-            let frontend_base = if is_dev {
-                "http://localhost:1420".to_string()
-            } else {
-                format!("http://127.0.0.1:{port}")
-            };
-            commands::set_frontend_base(frontend_base);
-
-            // 网易云 cookie 持久化路径（应用数据目录 / .cookie）。
+            // 网易云 / QQ cookie 持久化路径（应用数据目录）。
             if let Ok(dir) = app.path().app_data_dir() {
                 let _ = std::fs::create_dir_all(&dir);
                 server::netease::cookie_store::init(dir.join("netease.cookie"));
                 server::qq::init(dir.join("qq.cookie"));
             }
 
+            // 端口已 LISTEN，先起后端再建窗口（连接不丢）。
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = server::serve(port).await {
+                if let Err(e) = server::serve(listener).await {
                     tracing::error!("后端启动失败: {e}");
                 }
             });
 
-            if !is_dev {
-                if let Some(win) = app.get_webview_window("main") {
-                    if let Ok(url) = format!("http://127.0.0.1:{port}/").parse() {
-                        let _ = win.navigate(url);
-                    }
-                }
+            // 主窗口直接加载 axum（无固定端口、无 tauri:// 闪屏）。
+            let url: tauri::Url = format!("{base}/").parse()?;
+            let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
+                .title("Mineradio")
+                .inner_size(1280.0, 720.0)
+                .min_inner_size(960.0, 540.0)
+                .resizable(true)
+                .center();
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true);
             }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // Windows/Linux：无边框，应用自绘标题栏与窗口控件。
+                builder = builder.decorations(false);
+            }
+            builder.build()?;
 
-            tracing::info!("Mineradio 启动 (port={port}, dev={is_dev})");
+            tracing::info!("Mineradio 启动 (port={port})");
             Ok(())
         })
         .run(tauri::generate_context!())

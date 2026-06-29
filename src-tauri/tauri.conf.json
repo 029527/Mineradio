@@ -5,28 +5,11 @@
   "identifier": "com.mineradio.desktop",
   "build": {
     "frontendDist": "../frontend/dist",
-    "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "cd frontend && bun run dev",
+    "beforeDevCommand": "cd frontend && bun run build",
     "beforeBuildCommand": "cd frontend && bun run build"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Mineradio",
-        "width": 1280,
-        "height": 720,
-        "minWidth": 960,
-        "minHeight": 540,
-        "resizable": true,
-        "fullscreen": false,
-        "center": true,
-        "decorations": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
-        "backgroundColor": "#06070d"
-      }
-    ],
+    "windows": [],
     "withGlobalTauri": true,
     "macOSPrivateApi": true,
     "security": {
