@@ -87,6 +87,8 @@ pub fn run() {
                 .inner_size(1280.0, 720.0)
                 .min_inner_size(960.0, 540.0)
                 .resizable(true)
+                // 窗口底色设为应用深色，避免 macOS 圆角处露出白底（白角）。
+                .background_color(tauri::webview::Color(6, 7, 13, 255))
                 .center();
             #[cfg(target_os = "macos")]
             {
