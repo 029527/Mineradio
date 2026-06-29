@@ -15,19 +15,25 @@ info() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
-# 1. 平台检查 ----------------------------------------------------------------
+# 1. 平台 & 架构检查 --------------------------------------------------------
 [ "$(uname -s)" = "Darwin" ] || die "仅支持 macOS"
-ARCH="$(uname -m)"
-[ "$ARCH" = "arm64" ] || die "当前仅提供 Apple 芯片 (arm64) 版本，检测到: $ARCH"
+# Apple 芯片即使在 Rosetta 终端里(uname 报 x86_64)也按 arm64 安装，原生运行更快
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+  ASSET_ARCH="aarch64"   # Apple 芯片
+elif [ "$(uname -m)" = "x86_64" ]; then
+  ASSET_ARCH="x64"       # Intel
+else
+  die "不支持的架构: $(uname -m)"
+fi
 
-# 2. 查询最新 Release 的 dmg 下载地址 ----------------------------------------
+# 2. 查询最新 Release 中匹配本机架构的 dmg ----------------------------------
 info "查询最新版本…"
 API="https://api.github.com/repos/${REPO}/releases/latest"
 META="$(curl -fsSL "$API")" || die "无法访问 GitHub API (${API})"
 TAG="$(printf '%s' "$META" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
-DMG_URL="$(printf '%s' "$META" | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+\.dmg"' | head -1 | sed -E 's/.*"(https[^"]+)"$/\1/' || true)"
-[ -n "$DMG_URL" ] || die "最新 Release 里没有找到 .dmg 文件"
-ok "最新版本: ${TAG:-未知}"
+DMG_URL="$(printf '%s' "$META" | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+_'"${ASSET_ARCH}"'\.dmg"' | head -1 | sed -E 's/.*"(https[^"]+)"$/\1/' || true)"
+[ -n "$DMG_URL" ] || die "最新 Release 里没有找到 ${ASSET_ARCH} 架构的 .dmg 文件"
+ok "最新版本: ${TAG:-未知}（架构: ${ASSET_ARCH}）"
 
 # 3. 下载 dmg ----------------------------------------------------------------
 TMP="$(mktemp -d)"
